@@ -8,8 +8,12 @@ from dotenv import load_dotenv
 # Railway and other cloud platforms use their own environment variables
 load_dotenv(override=True)
 
-# Bot Token from BotFather
-BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
+# Bot Token from BotFather - check both possible environment variable names
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("BOT_TOKEN")
+
+# Validate bot token
+if not BOT_TOKEN or BOT_TOKEN == "your_bot_token_here":
+    raise ValueError("BOT_TOKEN or TELEGRAM_BOT_TOKEN environment variable is required")
 
 # File size limits (in bytes)
 MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB for Telegram upload
