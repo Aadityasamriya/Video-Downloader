@@ -12,8 +12,9 @@ load_dotenv(override=True)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
 
 # File size limits (in bytes)
-MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB for Telegram
-MAX_DOWNLOAD_SIZE = 500 * 1024 * 1024  # 500MB max download
+MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB for Telegram upload
+MAX_DOWNLOAD_SIZE = 2 * 1024 * 1024 * 1024  # 2GB max download size
+LARGE_FILE_THRESHOLD = 50 * 1024 * 1024  # Files larger than this will be split
 
 # Temporary directory for downloads
 TEMP_DIR = "./temp"

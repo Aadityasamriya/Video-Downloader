@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import json
 
-from config import MAX_DOWNLOAD_SIZE, DOWNLOAD_TIMEOUT
+from config import MAX_DOWNLOAD_SIZE, DOWNLOAD_TIMEOUT, LARGE_FILE_THRESHOLD
 from utils import FileManager, format_file_size, sanitize_filename
 
 logger = logging.getLogger(__name__)
@@ -39,11 +39,11 @@ class VideoDownloader:
         self.file_manager = file_manager
         self.executor = ThreadPoolExecutor(max_workers=3)
     
-    def _get_ydl_opts(self, output_path: str, progress_callback: Optional[Callable] = None, format_selector: str = None) -> Dict[str, Any]:
+    def _get_ydl_opts(self, output_path: str, progress_callback: Optional[Callable] = None, format_selector: Optional[str] = None) -> Dict[str, Any]:
         """Get yt-dlp options"""
         # Use best available format under size limit if no specific format requested
         if not format_selector:
-            format_selector = f'(best[height<=720][filesize<{MAX_DOWNLOAD_SIZE}]/best[filesize<{MAX_DOWNLOAD_SIZE}]/best)'
+            format_selector = f'(best[height<=1080][filesize<{MAX_DOWNLOAD_SIZE}]/best[filesize<{MAX_DOWNLOAD_SIZE}]/best)'
             
         opts = {
             'outtmpl': output_path,
@@ -59,17 +59,37 @@ class VideoDownloader:
             'no_check_certificate': True,
             'prefer_free_formats': True,
             'merge_output_format': 'mp4',
-            'socket_timeout': 30,
-            'retries': 3,
+            'socket_timeout': 60,
+            'retries': 5,
+            'fragment_retries': 10,
+            'extractor_retries': 3,
             # Add headers to avoid blocking
             'http_headers': {
                 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
-                'Accept-Language': 'en-us,en;q=0.5',
-                'Accept-Encoding': 'gzip, deflate',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
                 'DNT': '1',
                 'Connection': 'keep-alive',
-                'Upgrade-Insecure-Requests': '1'
+                'Upgrade-Insecure-Requests': '1',
+                'Sec-Fetch-Dest': 'document',
+                'Sec-Fetch-Mode': 'navigate',
+                'Sec-Fetch-Site': 'none',
+                'Sec-Fetch-User': '?1'
+            },
+            # Platform-specific configurations
+            'extractor_args': {
+                'instagram': {
+                    'include_stories': False,
+                    'include_feed': True
+                },
+                'twitter': {
+                    'legacy_api': True
+                },
+                'youtube': {
+                    'skip_dash_manifest': False,
+                    'player_skip_initial_attempt': True
+                }
             }
         }
         
@@ -148,7 +168,7 @@ class VideoDownloader:
         
         return None
     
-    async def download_video(self, url: str, progress_callback: Optional[Callable] = None, format_selector: str = None) -> Optional[str]:
+    async def download_video(self, url: str, progress_callback: Optional[Callable] = None, format_selector: Optional[str] = None) -> Optional[str]:
         """Download video/file from URL"""
         try:
             # Get video info first
@@ -156,9 +176,10 @@ class VideoDownloader:
             if not info:
                 return None
             
-            # Check file size
-            if info.get('filesize', 0) > MAX_DOWNLOAD_SIZE:
-                raise Exception(f"File too large: {format_file_size(info['filesize'])}")
+            # Check file size - allow larger files now
+            estimated_size = info.get('filesize', 0) or info.get('filesize_approx', 0)
+            if estimated_size > MAX_DOWNLOAD_SIZE:
+                raise Exception(f"File too large: {format_file_size(estimated_size)}. Maximum allowed: {format_file_size(MAX_DOWNLOAD_SIZE)}")
             
             # Generate output path
             title = sanitize_filename(info.get('title', 'download'))
@@ -180,10 +201,17 @@ class VideoDownloader:
                         
                         # Find the downloaded file
                         base_path = output_path.replace(f'.{ext}', '')
-                        for possible_ext in ['mp4', 'webm', 'mkv', 'avi', 'mov', 'mp3', 'm4a', 'wav', ext]:
+                        downloaded_files = []
+                        
+                        # Check for common video/audio extensions
+                        for possible_ext in ['mp4', 'webm', 'mkv', 'avi', 'mov', 'mp3', 'm4a', 'wav', 'flv', 'm4v', ext]:
                             possible_path = f"{base_path}.{possible_ext}"
                             if os.path.exists(possible_path):
-                                return possible_path
+                                downloaded_files.append(possible_path)
+                        
+                        if downloaded_files:
+                            # Return the largest file (usually the main content)
+                            return max(downloaded_files, key=lambda f: os.path.getsize(f) if os.path.exists(f) else 0)
                         
                         return None
                         
@@ -256,6 +284,64 @@ class VideoDownloader:
             logger.error(f"Compression error: {e}")
         
         return None
+    
+    def split_large_file(self, input_path: str, max_size: int = 45 * 1024 * 1024) -> list[str]:
+        """Split large files into smaller chunks for Telegram"""
+        try:
+            file_size = os.path.getsize(input_path)
+            if file_size <= max_size:
+                return [input_path]
+            
+            base_name = os.path.splitext(input_path)[0]
+            base_ext = os.path.splitext(input_path)[1]
+            split_files = []
+            
+            # Calculate number of parts needed
+            num_parts = (file_size + max_size - 1) // max_size
+            
+            with open(input_path, 'rb') as input_file:
+                for i in range(num_parts):
+                    part_filename = f"{base_name}_part{i+1:03d}{base_ext}"
+                    with open(part_filename, 'wb') as part_file:
+                        chunk = input_file.read(max_size)
+                        if chunk:
+                            part_file.write(chunk)
+                            split_files.append(part_filename)
+                            logger.info(f"Created part {i+1}/{num_parts}: {part_filename}")
+            
+            return split_files
+            
+        except Exception as e:
+            logger.error(f"Error splitting file: {e}")
+            return [input_path]
+    
+    def get_platform_specific_opts(self, url: str) -> Dict[str, Any]:
+        """Get platform-specific yt-dlp options"""
+        platform_opts = {}
+        
+        if 'instagram.com' in url:
+            platform_opts.update({
+                'http_headers': {
+                    'User-Agent': 'Instagram 76.0.0.15.395 Android (24/7.0; 640dpi; 1440x2560; samsung; SM-G930F; herolte; samsungexynos8890; en_US; 138226743)',
+                    'X-IG-App-ID': '936619743392459'
+                }
+            })
+        elif 'twitter.com' in url or 'x.com' in url:
+            platform_opts.update({
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://twitter.com/'
+                }
+            })
+        elif 'terabox.com' in url or '1024tera.com' in url:
+            platform_opts.update({
+                'http_headers': {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                    'Referer': 'https://www.terabox.com/'
+                }
+            })
+        
+        return platform_opts
     
     def __del__(self):
         """Cleanup executor"""

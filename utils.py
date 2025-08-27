@@ -197,13 +197,17 @@ class UserStats:
             }
         return self.user_stats[user_id]
     
-    def update_stats(self, user_id: int, file_size: int, platform: str):
-        """Update user statistics"""
+    def record_download(self, user_id: int, platform: str, file_size: int):
+        """Record a download for user statistics"""
         stats = self.get_user_stats(user_id)
         stats['downloads'] += 1
         stats['total_size'] += file_size
         stats['last_use'] = datetime.now()
         stats['platforms'].add(platform)
+    
+    def update_stats(self, user_id: int, file_size: int, platform: str):
+        """Update user statistics (legacy method)"""
+        self.record_download(user_id, platform, file_size)
     
     def format_user_stats(self, user_id: int) -> str:
         """Format user statistics for display"""

@@ -9,7 +9,7 @@ from telegram.ext import Application, CommandHandler, MessageHandler, filters, C
 from telegram.constants import ParseMode
 from telegram.error import TelegramError
 
-from config import BOT_TOKEN, MESSAGES, RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW, MAX_FILE_SIZE, TEMP_DIR
+from config import BOT_TOKEN, MESSAGES, RATE_LIMIT_REQUESTS, RATE_LIMIT_WINDOW, MAX_FILE_SIZE, TEMP_DIR, LARGE_FILE_THRESHOLD
 from downloader import VideoDownloader
 from utils import (
     RateLimiter, FileManager, UserStats, validate_url, 
@@ -222,12 +222,36 @@ class TelegramVideoBot:
                     file_size = self.file_manager.get_file_size(file_path)
                 
                 if file_size > MAX_FILE_SIZE:
+                    # Try splitting the file
                     await processing_msg.edit_text(
-                        MESSAGES["error"].format(error=f"File is too large ({format_file_size(file_size)}) even after compression. Maximum size is {format_file_size(MAX_FILE_SIZE)}."),
+                        info_text + "\n\n✂️ **File still too large, splitting into parts...**",
                         parse_mode=ParseMode.MARKDOWN
                     )
-                    self.file_manager.cleanup_file(file_path)
-                    return
+                    
+                    split_files = self.downloader.split_large_file(file_path)
+                    if len(split_files) > 1:
+                        # Upload all parts
+                        for i, part_file in enumerate(split_files):
+                            part_caption = f"📹 Part {i+1}/{len(split_files)}\n{video_info.get('title', 'Unknown')}"
+                            await self._send_file(update, part_file, part_caption, video_info)
+                            # Clean up part file after sending
+                            self.file_manager.cleanup_file(part_file)
+                        
+                        # Final cleanup
+                        self.file_manager.cleanup_file(file_path)
+                        await processing_msg.edit_text(
+                            f"✅ **Upload Complete!**\n\nSent {len(split_files)} parts successfully.",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        self.user_stats.record_download(user_id, platform, original_size)
+                        return
+                    else:
+                        await processing_msg.edit_text(
+                            MESSAGES["error"].format(error=f"File is too large ({format_file_size(file_size)}) even after compression. Maximum size is {format_file_size(MAX_FILE_SIZE)}."),
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        self.file_manager.cleanup_file(file_path)
+                        return
             
             # Send the file
             await processing_msg.edit_text(
@@ -235,10 +259,11 @@ class TelegramVideoBot:
                 parse_mode=ParseMode.MARKDOWN
             )
             
-            await self._send_file(update, file_path, video_info)
+            caption = f"✅ **Download Complete**\n\n📝 **Title:** {video_info.get('title', 'Unknown')[:100]}"
+            await self._send_file(update, file_path, caption, video_info)
             
             # Update user stats
-            self.user_stats.update_stats(user_id, original_size, platform)
+            self.user_stats.record_download(user_id, platform, original_size)
             
             # Clean up
             self.file_manager.cleanup_file(file_path)
@@ -259,21 +284,22 @@ class TelegramVideoBot:
             except:
                 pass
     
-    async def _send_file(self, update: Update, file_path: str, video_info: dict):
+    async def _send_file(self, update: Update, file_path: str, caption: str, video_info: dict):
         """Send file to user"""
         try:
             file_size = self.file_manager.get_file_size(file_path)
             filename = os.path.basename(file_path)
             
-            # Prepare caption
-            caption = f"""✅ **Download Complete**
+            # Use the provided caption or create a default one
+            if not caption:
+                caption = f"""✅ **Download Complete**
 
 📝 **Title:** {video_info.get('title', 'Unknown')[:100]}
 👤 **Uploader:** {video_info.get('uploader', 'Unknown')}
 📦 **Size:** {format_file_size(file_size)}
 ⏱️ **Duration:** {self._format_duration(video_info.get('duration', 0))}
 
-🤖 @YourBotUsername"""
+🤖 Bot"""
             
             # Determine file type and send accordingly
             file_extension = filename.split('.')[-1].lower()
@@ -412,12 +438,29 @@ class TelegramVideoBot:
                     file_size = self.file_manager.get_file_size(file_path)
                 
                 if file_size > MAX_FILE_SIZE:
-                    await query.edit_message_text(
-                        f"❌ **File Too Large**\n\nFile is {format_file_size(file_size)} even after compression. Maximum size is {format_file_size(MAX_FILE_SIZE)}.",
-                        parse_mode=ParseMode.MARKDOWN
-                    )
-                    self.file_manager.cleanup_file(file_path)
-                    return
+                    # Try splitting the file
+                    split_files = self.downloader.split_large_file(file_path)
+                    if len(split_files) > 1:
+                        # Upload all parts
+                        for i, part_file in enumerate(split_files):
+                            part_caption = f"📹 Part {i+1}/{len(split_files)}\n{video_info.get('title', 'Unknown')}"
+                            await self._send_file(update, part_file, part_caption, video_info)
+                            self.file_manager.cleanup_file(part_file)
+                        
+                        self.file_manager.cleanup_file(file_path)
+                        await query.edit_message_text(
+                            f"✅ **Upload Complete!**\n\nSent {len(split_files)} parts successfully.",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        self.user_stats.record_download(user_id, platform, original_size)
+                        return
+                    else:
+                        await query.edit_message_text(
+                            f"❌ **File Too Large**\n\nFile is {format_file_size(file_size)} even after compression. Maximum size is {format_file_size(MAX_FILE_SIZE)}.",
+                            parse_mode=ParseMode.MARKDOWN
+                        )
+                        self.file_manager.cleanup_file(file_path)
+                        return
             
             # Send the file
             await query.edit_message_text(
@@ -425,10 +468,11 @@ class TelegramVideoBot:
                 parse_mode=ParseMode.MARKDOWN
             )
             
-            await self._send_file(update, file_path, video_info)
+            caption = f"✅ **Quality Download Complete**\n\n📝 **Title:** {video_info.get('title', 'Unknown')[:100]}"
+            await self._send_file(update, file_path, caption, video_info)
             
             # Update user stats
-            self.user_stats.update_stats(user_id, original_size, platform)
+            self.user_stats.record_download(user_id, platform, original_size)
             
             # Clean up
             self.file_manager.cleanup_file(file_path)
