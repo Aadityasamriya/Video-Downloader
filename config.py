@@ -2,6 +2,10 @@
 Configuration settings for the Telegram Video Downloader Bot
 """
 import os
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv(override=True)
 
 # Bot Token from BotFather
 BOT_TOKEN = os.getenv("BOT_TOKEN", "your_bot_token_here")
