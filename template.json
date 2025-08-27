@@ -1,0 +1,45 @@
+{
+  "name": "Telegram Video Downloader Bot",
+  "description": "A powerful Telegram bot for downloading videos from 1000+ platforms including YouTube, Instagram, Twitter/X, TikTok, Facebook, Reddit, Pinterest, and Terabox. Supports files up to 2GB with automatic splitting.",
+  "icon": "🤖",
+  "tags": ["telegram", "bot", "video", "downloader", "youtube", "instagram", "tiktok"],
+  "services": [
+    {
+      "name": "telegram-bot",
+      "source": {
+        "type": "github",
+        "repo": "$REPO_URL"
+      },
+      "build": {
+        "builder": "nixpacks"
+      },
+      "deploy": {
+        "startCommand": "./start.sh",
+        "restartPolicyType": "always",
+        "restartPolicyMaxRetries": 999
+      },
+      "variables": {
+        "TELEGRAM_BOT_TOKEN": {
+          "description": "Your Telegram Bot Token from @BotFather",
+          "required": true
+        },
+        "TEMP_DIR": {
+          "description": "Temporary directory for downloads",
+          "default": "/tmp/downloads"
+        },
+        "MAX_DOWNLOAD_SIZE": {
+          "description": "Maximum download size in bytes (2GB default)",
+          "default": "2147483648"
+        },
+        "RATE_LIMIT_REQUESTS": {
+          "description": "Rate limit requests per user per minute",
+          "default": "5"
+        },
+        "RATE_LIMIT_WINDOW": {
+          "description": "Rate limit time window in seconds",
+          "default": "60"
+        }
+      }
+    }
+  ]
+}
