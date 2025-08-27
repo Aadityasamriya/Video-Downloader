@@ -1,0 +1,10 @@
+[build]
+builder = "nixpacks"
+
+[deploy]
+startCommand = "python main.py"
+restartPolicyType = "always"
+restartPolicyMaxRetries = 999
+
+[build.nixPacksConfig]
+packages = ["python311", "ffmpeg"]

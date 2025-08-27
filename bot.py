@@ -341,6 +341,11 @@ class TelegramVideoBot:
             job_queue.run_repeating(self._cleanup_job, interval=3600, first=60)  # Run every hour, start after 1 minute
         
         logger.info("Bot started successfully!")
+        logger.info("Bot is running 24x7 - polling for updates...")
         
-        # Run the bot
-        application.run_polling(allowed_updates=Update.ALL_TYPES)
+        # Run the bot with better stability settings
+        application.run_polling(
+            allowed_updates=Update.ALL_TYPES,
+            timeout=30,
+            drop_pending_updates=True
+        )

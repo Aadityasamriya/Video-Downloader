@@ -7,6 +7,8 @@ import os
 import sys
 import asyncio
 import logging
+import signal
+import threading
 from bot import TelegramVideoBot
 from config import BOT_TOKEN, TEMP_DIR
 
@@ -81,9 +83,18 @@ def setup_environment():
     
     return True
 
+def signal_handler(signum, frame):
+    """Handle shutdown signals"""
+    logger.info(f"Received signal {signum}. Shutting down gracefully...")
+    sys.exit(0)
+
 def main():
     """Main function"""
     logger.info("Starting Telegram Video Downloader Bot...")
+    
+    # Setup signal handlers for graceful shutdown
+    signal.signal(signal.SIGINT, signal_handler)
+    signal.signal(signal.SIGTERM, signal_handler)
     
     # Check dependencies
     if not check_dependencies():
@@ -97,6 +108,15 @@ def main():
     check_ffmpeg()
     
     try:
+        # Start health check server in background for Railway
+        try:
+            from health import start_health_server
+            health_thread = threading.Thread(target=start_health_server, daemon=True)
+            health_thread.start()
+            logger.info("Health check server started for Railway monitoring")
+        except Exception as e:
+            logger.warning(f"Could not start health server: {e}")
+        
         # Create and run bot
         bot = TelegramVideoBot()
         logger.info("Bot initialized successfully")
@@ -107,6 +127,10 @@ def main():
         logger.info("- Facebook, Reddit, Pinterest, Dailymotion")
         logger.info("- Vimeo, Terabox, and many more platforms")
         
+        # Keep the process alive
+        logger.info("Bot is running 24x7. Press Ctrl+C to stop.")
+        logger.info("Bot will automatically restart if it crashes.")
+        
         # Start the bot
         bot.run()
         
@@ -114,7 +138,11 @@ def main():
         logger.info("Bot stopped by user")
     except Exception as e:
         logger.error(f"Fatal error: {e}")
-        sys.exit(1)
+        # Don't exit immediately, try to restart
+        logger.info("Attempting to restart in 5 seconds...")
+        import time
+        time.sleep(5)
+        main()  # Restart
 
 if __name__ == "__main__":
     main()
