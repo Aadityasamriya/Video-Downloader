@@ -4,7 +4,8 @@ Configuration settings for the Telegram Video Downloader Bot
 import os
 from dotenv import load_dotenv
 
-# Load environment variables from .env file
+# Load environment variables from .env file (for local development)
+# Railway and other cloud platforms use their own environment variables
 load_dotenv(override=True)
 
 # Bot Token from BotFather

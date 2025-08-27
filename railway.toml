@@ -2,8 +2,8 @@
 builder = "nixpacks"
 
 [deploy]
-startCommand = "python main.py"
-restartPolicyType = "always"
+startCommand = "./start.sh"
+restartPolicyType = "always" 
 restartPolicyMaxRetries = 999
 
 [build.nixPacksConfig]
