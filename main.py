@@ -108,12 +108,35 @@ def main():
     check_ffmpeg()
     
     try:
-        # Start health check server in background for Railway
+        # Start simple HTTP server for Railway health check
         try:
-            from health import start_health_server
+            import http.server
+            import socketserver
+            
+            class HealthHandler(http.server.SimpleHTTPRequestHandler):
+                def do_GET(self):
+                    if self.path == '/health' or self.path == '/':
+                        self.send_response(200)
+                        self.send_header('Content-type', 'application/json')
+                        self.end_headers()
+                        self.wfile.write(b'{"status":"healthy","service":"telegram-bot"}')
+                    else:
+                        self.send_response(404)
+                        self.end_headers()
+                
+                def log_message(self, format, *args):
+                    pass  # Suppress HTTP logs
+            
+            def start_health_server():
+                try:
+                    with socketserver.TCPServer(("", 8000), HealthHandler) as httpd:
+                        httpd.serve_forever()
+                except Exception as e:
+                    logger.error(f"Health server error: {e}")
+            
             health_thread = threading.Thread(target=start_health_server, daemon=True)
             health_thread.start()
-            logger.info("Health check server started for Railway monitoring")
+            logger.info("Health check server started on port 8000 for Railway")
         except Exception as e:
             logger.warning(f"Could not start health server: {e}")
         

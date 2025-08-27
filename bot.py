@@ -132,7 +132,41 @@ class TelegramVideoBot:
                 await processing_msg.edit_text(MESSAGES["invalid_link"], parse_mode=ParseMode.MARKDOWN)
                 return
             
-            # Show video info and start download
+            # Check if multiple quality options are available
+            available_formats = video_info.get('available_formats', [])
+            
+            if len(available_formats) > 1:
+                # Show quality selection
+                info_text = f"""📹 **Video Found**
+
+📝 **Title:** {video_info.get('title', 'Unknown')[:50]}...
+👤 **Uploader:** {video_info.get('uploader', 'Unknown')}
+🌐 **Platform:** {platform}
+⏱️ **Duration:** {self._format_duration(video_info.get('duration', 0))}
+
+📺 **Select Quality:**"""
+                
+                keyboard = []
+                for fmt in available_formats[:6]:  # Show max 6 options
+                    quality_text = f"{fmt['quality']}p"
+                    if fmt['filesize'] > 0:
+                        quality_text += f" ({format_file_size(fmt['filesize'])})"
+                    
+                    callback_data = f"quality_{user_id}_{fmt['format_id']}"
+                    keyboard.append([InlineKeyboardButton(quality_text, callback_data=callback_data)])
+                
+                # Add default best quality option
+                keyboard.append([InlineKeyboardButton("🎯 Best Quality (Auto)", callback_data=f"quality_{user_id}_best")])
+                
+                reply_markup = InlineKeyboardMarkup(keyboard)
+                await processing_msg.edit_text(info_text, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+                
+                # Store URL for later use
+                context.user_data[f'pending_url_{user_id}'] = url
+                context.user_data[f'video_info_{user_id}'] = video_info
+                return
+            
+            # No quality options or single format - proceed with download
             info_text = f"""📹 **Video Found**
 
 📝 **Title:** {video_info.get('title', 'Unknown')[:50]}...
@@ -155,8 +189,8 @@ class TelegramVideoBot:
                 except:
                     pass  # Ignore edit errors
             
-            # Download the file
-            file_path = await self.downloader.download_video(url, progress_callback)
+            # Download the file  
+            file_path = await self.downloader.download_video(url, progress_callback, None)
             
             if not file_path:
                 await processing_msg.edit_text(
@@ -286,6 +320,132 @@ class TelegramVideoBot:
                 parse_mode=ParseMode.MARKDOWN
             )
     
+    async def handle_quality_selection(self, update: Update, context: ContextTypes.DEFAULT_TYPE):
+        """Handle quality selection callback"""
+        query = update.callback_query
+        await query.answer()
+        
+        user_id = update.effective_user.id
+        callback_data = query.data
+        
+        if not callback_data.startswith(f'quality_{user_id}_'):
+            await query.edit_message_text("❌ **Error**\n\nInvalid selection.", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        format_id = callback_data.replace(f'quality_{user_id}_', '')
+        
+        # Get stored URL and info
+        url = context.user_data.get(f'pending_url_{user_id}')
+        video_info = context.user_data.get(f'video_info_{user_id}')
+        
+        if not url or not video_info:
+            await query.edit_message_text("❌ **Error**\n\nSession expired. Please send the link again.", parse_mode=ParseMode.MARKDOWN)
+            return
+        
+        # Clean up stored data
+        context.user_data.pop(f'pending_url_{user_id}', None)
+        context.user_data.pop(f'video_info_{user_id}', None)
+        
+        platform = extract_platform_from_url(url)
+        
+        # Determine format selector
+        if format_id == 'best':
+            format_selector = None  # Use default best quality
+            quality_text = "Best Quality (Auto)"
+        else:
+            format_selector = f"{format_id}+bestaudio/best"
+            # Find quality details
+            selected_format = next((f for f in video_info.get('available_formats', []) if f['format_id'] == format_id), None)
+            quality_text = f"{selected_format['quality']}p" if selected_format else "Selected Quality"
+        
+        info_text = f"""📹 **Starting Download**
+
+📝 **Title:** {video_info.get('title', 'Unknown')[:50]}...
+👤 **Uploader:** {video_info.get('uploader', 'Unknown')}
+🌐 **Platform:** {platform}
+📺 **Quality:** {quality_text}
+
+⬇️ **Downloading...**"""
+        
+        await query.edit_message_text(info_text, parse_mode=ParseMode.MARKDOWN)
+        
+        try:
+            # Progress callback
+            async def progress_callback(progress):
+                try:
+                    await query.edit_message_text(
+                        info_text + f"\n\n📥 **Progress:** {progress}%",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                except:
+                    pass
+            
+            # Download the file with selected quality
+            file_path = await self.downloader.download_video(url, progress_callback, format_selector)
+            
+            if not file_path:
+                await query.edit_message_text(
+                    "❌ **Download Failed**\n\nThe file could not be downloaded. Please try again with a different quality.",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                return
+            
+            await query.edit_message_text(
+                info_text + "\n\n✅ **Download complete!** Preparing to send...",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            # Check file size and compress if needed
+            file_size = self.file_manager.get_file_size(file_path)
+            original_size = file_size
+            
+            if file_size > MAX_FILE_SIZE:
+                await query.edit_message_text(
+                    info_text + "\n\n🔄 **File too large, compressing...**",
+                    parse_mode=ParseMode.MARKDOWN
+                )
+                
+                compressed_path = self.downloader.compress_video(file_path)
+                if compressed_path:
+                    self.file_manager.cleanup_file(file_path)
+                    file_path = compressed_path
+                    file_size = self.file_manager.get_file_size(file_path)
+                
+                if file_size > MAX_FILE_SIZE:
+                    await query.edit_message_text(
+                        f"❌ **File Too Large**\n\nFile is {format_file_size(file_size)} even after compression. Maximum size is {format_file_size(MAX_FILE_SIZE)}.",
+                        parse_mode=ParseMode.MARKDOWN
+                    )
+                    self.file_manager.cleanup_file(file_path)
+                    return
+            
+            # Send the file
+            await query.edit_message_text(
+                info_text + "\n\n📤 **Uploading to Telegram...**",
+                parse_mode=ParseMode.MARKDOWN
+            )
+            
+            await self._send_file(update, file_path, video_info)
+            
+            # Update user stats
+            self.user_stats.update_stats(user_id, original_size, platform)
+            
+            # Clean up
+            self.file_manager.cleanup_file(file_path)
+            
+            # Delete processing message
+            try:
+                await query.delete_message()
+            except:
+                pass
+                
+        except Exception as e:
+            logger.error(f"Quality selection download error: {e}")
+            await query.edit_message_text(
+                f"❌ **Error**\n\n{str(e)}",
+                parse_mode=ParseMode.MARKDOWN
+            )
+
     def _format_duration(self, seconds: int) -> str:
         """Format duration in human readable format"""
         if seconds <= 0:
@@ -330,6 +490,7 @@ class TelegramVideoBot:
         application.add_handler(CommandHandler("start", self.start_command))
         application.add_handler(CommandHandler("help", self.help_command))
         application.add_handler(CommandHandler("stats", self.stats_command))
+        application.add_handler(CallbackQueryHandler(self.handle_quality_selection))
         application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, self.handle_url))
         
         # Add error handler

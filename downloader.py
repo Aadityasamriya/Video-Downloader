@@ -39,11 +39,15 @@ class VideoDownloader:
         self.file_manager = file_manager
         self.executor = ThreadPoolExecutor(max_workers=3)
     
-    def _get_ydl_opts(self, output_path: str, progress_callback: Optional[Callable] = None) -> Dict[str, Any]:
+    def _get_ydl_opts(self, output_path: str, progress_callback: Optional[Callable] = None, format_selector: str = None) -> Dict[str, Any]:
         """Get yt-dlp options"""
+        # Use best available format under size limit if no specific format requested
+        if not format_selector:
+            format_selector = f'(best[height<=720][filesize<{MAX_DOWNLOAD_SIZE}]/best[filesize<{MAX_DOWNLOAD_SIZE}]/best)'
+            
         opts = {
             'outtmpl': output_path,
-            'format': 'best[filesize<{}]'.format(MAX_DOWNLOAD_SIZE),
+            'format': format_selector,
             'noplaylist': True,
             'no_warnings': False,
             'extract_flat': False,
@@ -51,13 +55,21 @@ class VideoDownloader:
             'writeinfojson': False,
             'writesubtitles': False,
             'writeautomaticsub': False,
-            'ignoreerrors': True,
+            'ignoreerrors': False,
             'no_check_certificate': True,
             'prefer_free_formats': True,
             'merge_output_format': 'mp4',
+            'socket_timeout': 30,
+            'retries': 3,
             # Add headers to avoid blocking
             'http_headers': {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-us,en;q=0.5',
+                'Accept-Encoding': 'gzip, deflate',
+                'DNT': '1',
+                'Connection': 'keep-alive',
+                'Upgrade-Insecure-Requests': '1'
             }
         }
         
@@ -72,7 +84,16 @@ class VideoDownloader:
             loop = asyncio.get_event_loop()
             
             def _get_info():
-                with yt_dlp.YoutubeDL({'quiet': True, 'no_warnings': True}) as ydl:
+                ydl_opts = {
+                    'quiet': True, 
+                    'no_warnings': True,
+                    'socket_timeout': 30,
+                    'retries': 3,
+                    'http_headers': {
+                        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
+                    }
+                }
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     try:
                         info = ydl.extract_info(url, download=False)
                         return info
@@ -83,6 +104,28 @@ class VideoDownloader:
             info = await loop.run_in_executor(self.executor, _get_info)
             
             if info:
+                # Get available quality formats
+                available_formats = []
+                formats = info.get('formats', [])
+                
+                for fmt in formats:
+                    if fmt.get('vcodec') != 'none' and fmt.get('height'):  # Video formats only
+                        quality = fmt.get('height', 0)
+                        filesize = fmt.get('filesize') or fmt.get('filesize_approx') or 0
+                        format_note = fmt.get('format_note', '')
+                        
+                        if quality >= 144 and filesize < MAX_DOWNLOAD_SIZE:  # Reasonable quality and size
+                            available_formats.append({
+                                'format_id': fmt.get('format_id'),
+                                'quality': quality,
+                                'filesize': filesize,
+                                'ext': fmt.get('ext', 'mp4'),
+                                'note': format_note
+                            })
+                
+                # Sort by quality (highest first)
+                available_formats.sort(key=lambda x: x['quality'], reverse=True)
+                
                 # Extract useful information
                 result = {
                     'title': info.get('title', 'Unknown Title'),
@@ -92,6 +135,7 @@ class VideoDownloader:
                     'uploader': info.get('uploader', 'Unknown'),
                     'upload_date': info.get('upload_date', ''),
                     'formats': info.get('formats', []),
+                    'available_formats': available_formats,
                     'thumbnail': info.get('thumbnail', ''),
                     'description': info.get('description', ''),
                     'view_count': info.get('view_count', 0),
@@ -104,7 +148,7 @@ class VideoDownloader:
         
         return None
     
-    async def download_video(self, url: str, progress_callback: Optional[Callable] = None) -> Optional[str]:
+    async def download_video(self, url: str, progress_callback: Optional[Callable] = None, format_selector: str = None) -> Optional[str]:
         """Download video/file from URL"""
         try:
             # Get video info first
@@ -128,7 +172,7 @@ class VideoDownloader:
             loop = asyncio.get_event_loop()
             
             def _download():
-                ydl_opts = self._get_ydl_opts(output_template, progress_callback)
+                ydl_opts = self._get_ydl_opts(output_template, progress_callback, format_selector)
                 
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     try:

@@ -28,3 +28,7 @@ args = "pip install python-telegram-bot yt-dlp validators && python main.py"
 
 [workflows.workflow.metadata]
 outputType = "console"
+
+[[ports]]
+localPort = 8000
+externalPort = 80
