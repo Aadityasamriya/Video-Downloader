@@ -1,0 +1,19 @@
+{
+  "name": "Telegram Video Downloader Bot",
+  "description": "A powerful Telegram bot that downloads videos from 1000+ platforms",
+  "keywords": ["telegram", "bot", "video", "downloader", "youtube", "instagram", "tiktok"],
+  "website": "https://github.com/yourusername/telegram-video-bot",
+  "repository": "https://github.com/yourusername/telegram-video-bot",
+  "env": {
+    "BOT_TOKEN": {
+      "description": "Your Telegram Bot Token from @BotFather",
+      "required": true
+    }
+  },
+  "buildpacks": [
+    {
+      "url": "heroku/python"
+    }
+  ],
+  "stack": "heroku-22"
+}
